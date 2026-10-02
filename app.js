@@ -6,7 +6,7 @@ import { DRACOLoader } from 'https://cdn.jsdelivr.net/npm/three@0.180.0/examples
 const STAC_COLLECTION = 'ch.swisstopo.swissalti3d';
 const STAC_ITEMS = `https://data.geo.admin.ch/api/stac/v1/collections/${STAC_COLLECTION}/items`;
 const REGIO_COLLECTION = 'ch.swisstopo.swissaltiregio';
-const APP_VERSION = '8.2';
+const APP_VERSION = '8.1';
 const REGIO_ITEMS = `https://data.geo.admin.ch/api/stac/v1/collections/${REGIO_COLLECTION}/items`;
 const MAX_TILES = 1600;
 const MAX_STAC_PAGES = 120;
@@ -1812,7 +1812,7 @@ async function loadBuildingTriangles(t) {
   debug(`Gebäude-Höhenabgleich: lokaler Offset ≈ ${geoidOffset.toFixed(2)} m · Gebäudehöhe 1.00× (keine Relief-Überhöhung).`);
 
   const out=[];
-  let triCount=0, clippedTriangles=0, capTriangles=0, foundationVertices=0, borderBuildingsClipped=0, borderFallbackFull=0, borderHardCropped=0, borderHardCropFailed=0, floatingComponentsCorrected=0, floatingCorrectionMaxM=0;
+  let triCount=0, clippedTriangles=0, capTriangles=0, foundationVertices=0, borderBuildingsClipped=0, borderFallbackFull=0, borderHardCropped=0, borderHardCropFailed=0;
   const va=new THREE.Vector3(), vb=new THREE.Vector3(), vc=new THREE.Vector3();
   const modelClipPlanes = makeModelClipPlanes(t);
   const baseMm=Number(els.baseThickness.value);
@@ -1900,45 +1900,6 @@ async function loadBuildingTriangles(t) {
     for(const [r,tris] of compTris){
       const vis=compVerts.get(r)||[];
       if(!vis.length) continue;
-
-      // v8.2: objektspezifische Korrektur für schwebende Gebäudeteile / Ruinen.
-      // swissBUILDINGS³D kann offene oder nur teilweise erfasste Objekte enthalten,
-      // deren tiefste Geometrie deutlich über dem lokalen Terrain liegt. Das ist
-      // besonders bei Ruinen problematisch: die Mauerkrone ist korrekt geformt,
-      // aber der ganze Körper sitzt zu hoch. In diesem Fall darf NICHT einfach die
-      // Wand nach unten verlängert werden, weil dadurch die Ruine künstlich höher
-      // würde. Stattdessen wird der komplette zusammenhängende Körper starr nach
-      // unten verschoben. Seine interne Höhe und Dach-/Mauergeometrie bleiben exakt.
-      //
-      // Als robuste Basis verwenden wir das 8%-Perzentil von
-      // (Gebäudehöhe nach globalem Geoidabgleich - lokales Terrain). Ein einzelner
-      // Ausreisser bestimmt die Lage damit nicht. Erst bei >1.0 m eindeutigem
-      // Schwebeabstand wird korrigiert. Ziel ist 0.10 m Einbettung ins Terrain.
-      const baseDiffs=[];
-      for(const vi of vis){
-        const v=verts[vi];
-        const diff=v.correctedH-v.terr;
-        if(Number.isFinite(diff)) baseDiffs.push(diff);
-      }
-      const componentBaseGap=baseDiffs.length ? percentile(baseDiffs,0.08) : 0;
-      const FLOAT_GAP_THRESHOLD_M=1.0;
-      const TARGET_EMBED_M=0.10;
-      const MAX_OBJECT_SHIFT_M=20.0;
-      let objectShiftM=0;
-      if(baseDiffs.length>=3 && componentBaseGap>FLOAT_GAP_THRESHOLD_M){
-        objectShiftM=Math.min(MAX_OBJECT_SHIFT_M, componentBaseGap+TARGET_EMBED_M);
-        const dzMm=objectShiftM*t.dims.mmPerMeter;
-        for(const vi of vis){
-          verts[vi].p[2]-=dzMm;
-          verts[vi].correctedH-=objectShiftM;
-        }
-        floatingComponentsCorrected++;
-        floatingCorrectionMaxM=Math.max(floatingCorrectionMaxM,objectShiftM);
-        let minXm=Infinity,maxXm=-Infinity,minYm=Infinity,maxYm=-Infinity;
-        for(const vi of vis){ const p=verts[vi].p; minXm=Math.min(minXm,p[0]);maxXm=Math.max(maxXm,p[0]);minYm=Math.min(minYm,p[1]);maxYm=Math.max(maxYm,p[1]); }
-        debug(`Gebäudeobjekt schwebend erkannt: Basisabstand ≈ ${componentBaseGap.toFixed(2)} m · gesamter Körper ${objectShiftM.toFixed(2)} m abgesenkt · Ausdehnung ${(maxXm-minXm).toFixed(1)} × ${(maxYm-minYm).toFixed(1)} mm.`);
-      }
-
       const arr=(compTerr.get(r)||[]).slice().sort((a,b)=>a-b);
       const qi=Math.min(arr.length-1,Math.max(0,Math.floor(arr.length*0.15)));
       const refTerr=arr[qi];
@@ -2037,11 +1998,10 @@ async function loadBuildingTriangles(t) {
     }
   }
   debug(`Gebäude-Fundamentband: ${foundationBandMm.toFixed(2)} mm über lokalem Terrain.`);
-  if (floatingComponentsCorrected) debug(`Schwebende Gebäudeobjekte korrigiert: ${floatingComponentsCorrected.toLocaleString('de-CH')} · grösste Absenkung ${floatingCorrectionMaxM.toFixed(2)} m.`);
   tiles.dispose?.();
   if (!triCount) throw new Error('Keine Gebäudedreiecke innerhalb des Reliefausschnitts gefunden.');
   debug(`Gebäude: ${triCount.toLocaleString('de-CH')} Dreiecke übernommen; ${borderBuildingsClipped.toLocaleString('de-CH')} Randhäuser bearbeitet; ${capTriangles.toLocaleString('de-CH')} Abschluss-Dreiecke im Primärschnitt; Randhäuser exakt gekappt/geschlossen: ${borderHardCropped.toLocaleString('de-CH')}; Randhäuser verworfen statt überstehend ausgegeben: ${borderHardCropFailed.toLocaleString('de-CH')}; ${foundationVertices.toLocaleString('de-CH')} Fassaden-Bodenpunkte ins Terrain verlängert.`);
-  return { triangles:new Float32Array(out), meta:{ triangleCount:triCount, meshCount:meshes.length, heightFactor, geoidOffset, floatingComponentsCorrected, floatingCorrectionMaxM } };
+  return { triangles:new Float32Array(out), meta:{ triangleCount:triCount, meshCount:meshes.length, heightFactor, geoidOffset } };
 }
 
 async function generateTerrain() {
